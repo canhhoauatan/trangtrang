@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Chấm điểm bài trắc nghiệm</title>
+    <script async src="https://docs.opencv.org/3.4.0/opencv.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+        }
+        canvas {
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>Chấm điểm bài trắc nghiệm</h1>
+        <input type="file" id="answerSheetInput" accept="image/*">
+        <br>
+        <input type="file" id="testSheetInput" accept="image/*">
+        <br>
+        <canvas id="canvasOutput"></canvas>
+        <div id="results"></div>
+    </div>
+
+    <script>
+        let answerKey = [];
+
+        document.getElementById('answerSheetInput').addEventListener('change', () => {
+            let fileInput = document.getElementById('answerSheetInput');
+            if (fileInput.files.length > 0) {
+                let file = fileInput.files[0];
+                let reader = new FileReader();
+                reader.onload = function(e) {
+                    let img = new Image();
+                    img.onload = function() {
+                        processImage(img, true);
+                    }
+                    img.src = e.target.result;
+                }
+                reader.readAsDataURL(file);
+            } else {
+                alert("Vui lòng chọn một ảnh phiếu đáp án.");
+            }
+        });
+
+        document.getElementById('testSheetInput').addEventListener('change', () => {
+            let fileInput = document.getElementById('testSheetInput');
+            if (fileInput.files.length > 0) {
+                let file = fileInput.files[0];
+                let reader = new FileReader();
+                reader.onload = function(e) {
+                    let img = new Image();
+                    img.onload = function() {
+                        processImage(img, false);
+                    }
+                    img.src = e.target.result;
+                }
+                reader.readAsDataURL(file);
+            } else {
+                alert("Vui lòng chọn một ảnh phiếu trả lời.");
+            }
+        });
+
+function processImage(img, isAnswerSheet) {
+    let canvasOutput = document.getElementById('canvasOutput');
+    let ctx = canvasOutput.getContext('2d');
+    canvasOutput.width = img.width;
+    canvasOutput.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    let src = cv.imread(canvasOutput);
+    let gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+    // Circle detection
+    let circles = new cv.Mat();
+    cv.HoughCircles(gray, circles, cv.HOUGH_GRADIENT, 1, 45, 75, 40, 10, 20);
+
+    // Contour detection for squares
+    let binary = new cv.Mat();
+    cv.threshold(gray, binary, 150, 255, cv.THRESH_BINARY_INV);
+
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let answers = [];
+    let largeSquareCount = 1;
+    let smallSquareCount = 10;
+
+    // Process circles
+    for (let i = 0; i < circles.cols; ++i) {
+        let circle = circles.data32F.slice(i * 3, i * 3 + 3);
+        let center = new cv.Point(circle[0], circle[1]);
+        let radius = circle[2];
+        let mask = new cv.Mat.zeros(gray.rows, gray.cols, cv.CV_8UC1);
+        cv.circle(mask, center, radius, new cv.Scalar(255, 255, 255, 255), -1);
+        let mean = cv.mean(gray, mask);
+        let isFilled = mean[0] < 150; // Adjusted threshold to determine if the circle is filled
+        if (isFilled) {
+            let circleArea = Math.PI * Math.pow(radius, 2);
+            let extendedCircleArea = Math.PI * Math.pow(radius * 1.2, 2); // Allow for 20% larger filled area
+            let filledArea = cv.countNonZero(mask);
+            if ((filledArea / circleArea) >= 0.7 || filledArea >= (0.7 * extendedCircleArea)) {
+                answers.push({ x: center.x, y: center.y });
+                cv.circle(src, center, radius, [0, 255, 0, 255], -1); // Filled green for filled circles
+            } else {
+                cv.circle(src, center, radius, [255, 0, 0, 255], -1); // Filled red for not sufficiently filled circles
+            }
+        } else {
+            cv.circle(src, center, radius, [255, 0, 0, 255], 3); // Red circle for unfilled
+        }
+        mask.delete();
+    }
+
+    // Process contours for squares
+    for (let i = 0; i < contours.size(); i++) {
+        let contour = contours.get(i);
+        let rect = cv.boundingRect(contour);
+        if (rect.width > 20 && rect.height > 20) {
+            let mask = new cv.Mat.zeros(gray.rows, gray.cols, cv.CV_8UC1);
+            cv.rectangle(mask, new cv.Point(rect.x, rect.y), new cv.Point(rect.x + rect.width, rect.y + rect.height), new cv.Scalar(255, 255, 255, 255), -1);
+            let mean = cv.mean(gray, mask);
+            let isFilled = mean[0] < 150; // Adjusted threshold to determine if the square is filled
+            if (isFilled) {
+                cv.rectangle(src, new cv.Point(rect.x, rect.y), new cv.Point(rect.x + rect.width, rect.y + rect.height), [240, 170, 255, 255], 2); // Blue color for filled squares
+
+                let centerX = rect.x + rect.width / 2;
+                let centerY = rect.y + rect.height / 2;
+                let fontScale = 0.6;
+                let thickness = 1;
+
+                if (rect.width > 40 && rect.height > 40) {
+                    cv.putText(src, largeSquareCount.toString(), new cv.Point(centerX - 10, centerY + 10), cv.FONT_HERSHEY_SIMPLEX, fontScale, [0, 0, 255, 255], thickness); // Red text
+                    largeSquareCount++;
+                } else {
+                    cv.putText(src, smallSquareCount.toString(), new cv.Point(centerX - 10, centerY + 10), cv.FONT_HERSHEY_SIMPLEX, fontScale, [0, 255, 0, 255], thickness); // Green text
+                    smallSquareCount++;
+                }
+            }
+            mask.delete();
+        }
+    }
+
+    cv.imshow('canvasOutput', src);
+    src.delete();
+    gray.delete();
+    circles.delete();
+    binary.delete();
+    contours.delete();
+    hierarchy.delete();
+
+    if (isAnswerSheet) {
+        answerKey = answers;
+        alert("Đã lưu đáp án thành công!");
+    } else {
+        gradeTestSheet(answers);
+    }
+}
+
+function gradeTestSheet(answers) {
+    if (answerKey.length === 0) {
+        alert("Vui lòng nhập đáp án trước khi chấm điểm.");
+        return;
+    }
+
+    let canvasOutput = document.getElementById('canvasOutput');
+    let ctx = canvasOutput.getContext('2d');
+    let correctCount = 0;
+    let questionCount = answerKey.length;
+    let answeredCount = answers.length;
+
+    let correctAnswers = new Set();
+
+    answers.forEach(answer => {
+        let matched = false;
+        answerKey.forEach((a, index) => {
+            if (Math.abs(a.x - answer.x) < 15 && Math.abs(a.y - answer.y) < 15) { // Increased margin for position tolerance
+                correctAnswers.add(index);
+                matched = true;
+            }
+        });
+        // Tô đậm màu xanh cho đáp án đúng
+        ctx.beginPath();
+        ctx.arc(answer.x, answer.y, 15, 0, 2 * Math.PI);
+        ctx.fillStyle = matched ? 'green' : 'red';
+        ctx.fill();
+    });
+
+    correctCount = correctAnswers.size;
+
+    let resultText = `Tổng số câu: ${questionCount}<br>Số câu đã làm: ${answeredCount}<br>Số câu đúng: ${correctCount}<br>Điểm: ${correctCount}`;
+    document.getElementById('results').innerHTML = resultText;
+}
+
+    </script>
+</body>
+</html>
